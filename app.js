@@ -336,7 +336,7 @@ app.post("/api/syncMonoBank", async function (req, res) {
 
     const responses = await Promise.all(processItems);
     const countTrue = responses.filter(value => value === true).length;
-    res.status(200).send(`Синхронізованих транзакцій - ${countTrue}`);
+    res.status(200).send(`Sync transactions - ${countTrue}`);
 
   } catch (error) {
     console.error('Error processing request:', error);
