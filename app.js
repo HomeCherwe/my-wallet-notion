@@ -42,7 +42,7 @@ async function postNewCheckMonoBank(area, amount, note, card, id, date) {
       "Create Time MonoBank": { date: { start: date } },
       ID: { rich_text: [{ text: { content: id } }] },
       Card: { select: { name: card } },
-      Month: { relation: [{ id: linkMonth }] },
+      Month: { relation: linkMonth ? [{ id: linkMonth }] : [] },
     },
   });
 }
