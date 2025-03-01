@@ -4,88 +4,111 @@ const { Client } = require("@notionhq/client");
 
 const app = express();
 app.use(express.json());
-app.use(express.static("public"));
 
 const notion = new Client({ auth: "secret_mGHc8wQ6V7NVZ0eRzIF9km0UKLupyzPEgNVnn7yz0uz" });
-const urkMonth = ["Січень", "Лютий", "Березень", "Квітень", "Травень", "Червень", "Липень", "Серпень", "Вересень", "Жовтень", "Листопад", "Грудень"];
 
-const roundAndRemoveNegative = (value) => Math.round(Math.abs(value) / 100);
-const convertTimestampToISO = (timestamp) => new Date(timestamp * 1000).toISOString();
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function roundAndRemoveNegative(value) {
+  if (isNaN(value)) throw new Error("Invalid number");
+  return Math.round(Math.abs(value) / 100);
+}
+
+function convertTimestampToISO(timestamp) {
+  return new Date(timestamp * 1000).toISOString();
+}
 
 async function getCurrentLinkOfMonth() {
-  const { results } = await notion.databases.query({ database_id: "67857db90ccc4aa79e19815b2a1ab111" });
-  const currentMonth = urkMonth[new Date().getMonth()];
-  return results.find((item) => item.properties.Month.title[0].text.content === currentMonth)?.url.split("/")[3];
+  const myPage = await notion.databases.query({
+    database_id: "67857db90ccc4aa79e19815b2a1ab111",
+  });
+
+  const currentMonth = new Date().toLocaleString("uk-UA", { month: "long" });
+  const foundMonth = myPage.results.find(
+    (item) => item.properties.Month.title[0].text.content === currentMonth
+  )?.url;
+
+  return foundMonth ? foundMonth.split("/")[3] : null;
 }
 
-async function getAllCategories() {
-  const { properties } = await notion.databases.retrieve({ database_id: "eb90ede7155a4c5697758bc3b563ba7b" });
-  return properties.Categories.select.options.map((item) => item.name);
-}
-
-async function getBalance() {
-  const { results } = await notion.databases.query({ database_id: "67857db90ccc4aa79e19815b2a1ab111" });
-  return results.reduce((sum, item) => sum + item.properties.Balance.formula.number, 0);
-}
-
-async function postNewCheck(area, amount, category, note) {
+async function postNewCheckMonoBank(area, amount, note, card, id, date) {
   const linkMonth = await getCurrentLinkOfMonth();
   return notion.pages.create({
-    parent: { database_id: "eb90ede7155a4c5697758bc3b563ba7b" },
     icon: { type: "external", external: { url: area === "Дохід" ? "https://www.notion.so/icons/arrow-up-basic_green.svg" : "https://www.notion.so/icons/arrow-down-basic_red.svg" } },
+    parent: { database_id: "eb90ede7155a4c5697758bc3b563ba7b" },
     properties: {
-      Amount: { title: [{ text: { content: `₴${amount}` } }] },
-      Categories: { select: { name: category } },
+      Amount: { title: [{ text: { content: "₴" + amount } }] },
+      Categories: { select: { name: "MonoBank" } },
       Area: { select: { name: area } },
       Notes: { rich_text: [{ text: { content: note } }] },
+      "Create Time MonoBank": { date: { start: date } },
+      ID: { rich_text: [{ text: { content: id } }] },
+      Card: { select: { name: card } },
       Month: { relation: [{ id: linkMonth }] },
     },
   });
 }
 
-async function syncMonoBank(req, res) {
+app.post("/api/syncMonoBank", async function (req, res) {
+  if (!req.body) return res.status(400).send("Bad request: No body provided");
+
+  const xToken = req.body.api;
+  const id_cards = ["i6cWTK5hVISHvp46fbr_Lg", "biyChSHTk1jAMkBnM06R_g"];
+
   try {
-    const { api: xToken } = req.body;
-    if (!xToken) return res.status(400).send("Missing API token");
-
-    const id_cards = ['i6cWTK5hVISHvp46fbr_Lg', 'biyChSHTk1jAMkBnM06R_g'];
-    const from = Math.floor(Date.now() / 1000) - 5 * 24 * 60 * 60;
+    // Зменшуємо діапазон до 3 днів
     const to = Math.floor(Date.now() / 1000);
-
-    const responses = await Promise.all(
-      id_cards.map(async (id_card) => {
-        const { data } = await axios.get(`https://api.monobank.ua/personal/statement/${id_card}/${from}/${to}`, { headers: { "X-Token": xToken } });
-        return data.map((item) => ({ ...item, card: id_card }));
-      })
+    const from = Math.floor(Date.now() / 1000) - 3 * 24 * 60 * 60;
+    
+    const requests = id_cards.map(id_card =>
+      axios.get(`https://api.monobank.ua/personal/statement/${id_card}/${from}/${to}`, {
+        headers: { "X-Token": xToken },
+        timeout: 5000, // Додаємо таймаут
+      }).then(response => response.data.map(item => ({ ...item, card: id_card })))
+        .catch(error => {
+          console.error(`Error fetching data for ${id_card}:`, error.message);
+          return [];
+        })
     );
 
-    const sortedData = responses.flat().sort((a, b) => a.time - b.time);
+    // Використовуємо Promise.allSettled(), щоб уникнути падіння всієї операції
+    const results = await Promise.allSettled(requests);
+    const allData = results.flatMap(result => result.status === "fulfilled" ? result.value : []);
+
+    // Відсортовуємо дані за часом
+    const sortedData = allData.sort((a, b) => a.time - b.time);
+
+    // Отримуємо транзакції за останні 10 днів із Notion
     const formattedDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+    const notionPage = await notion.databases.query({
+      database_id: "eb90ede7155a4c5697758bc3b563ba7b",
+      filter: { property: "Created time", created_time: { on_or_after: formattedDate } }
+    });
 
-    const { results } = await notion.databases.query({ database_id: "eb90ede7155a4c5697758bc3b563ba7b", filter: { property: "Created time", created_time: { on_or_after: formattedDate } } });
-    const billingNotionIds = new Set(results.map((item) => item.properties.ID.rich_text[0]?.text.content));
+    const billingNotionIds = new Set(notionPage.results.map(item => item.properties.ID?.rich_text[0]?.text.content || ""));
 
-    const newTransactions = sortedData.filter(({ id }) => !billingNotionIds.has(id));
-    await Promise.all(
-      newTransactions.map(({ amount, cashbackAmount, description, comment, id, card, time }) =>
-        postNewCheck(amount < 0 ? "Витрата" : "Дохід", roundAndRemoveNegative(amount) + roundAndRemoveNegative(cashbackAmount), "MonoBank", `${description}${comment ? `\n${comment}` : ""}`, card === id_cards[0] ? "Mono Black" : "Mono White", id, convertTimestampToISO(time))
-      )
-    );
+    // Обробляємо нові транзакції
+    const processItems = sortedData.map(async (item) => {
+      if (billingNotionIds.has(item.id)) return false;
 
-    res.status(200).send(`Sync transactions - ${newTransactions.length}`);
+      const card = item.card === id_cards[0] ? "Mono Black" : "Mono White";
+      const amount = roundAndRemoveNegative(item.amount) + roundAndRemoveNegative(item.cashbackAmount);
+      const area = item.amount < 0 ? "Витрата" : "Дохід";
+      const note = item.description + (item.comment ? `\n${item.comment}` : "");
+      const date = convertTimestampToISO(item.time);
+
+      await postNewCheckMonoBank(area, amount, note, card, item.id, date);
+      return true;
+    });
+
+    const responses = await Promise.allSettled(processItems);
+    const countTrue = responses.filter(r => r.status === "fulfilled" && r.value).length;
+
+    res.status(200).send(`Sync transactions - ${countTrue}`);
   } catch (error) {
-    console.error("Error syncing transactions:", error);
+    console.error("Error processing request:", error);
     res.status(500).send(`Internal server error: ${error.message}`);
   }
-}
+});
 
-// Routes
-app.get("/", (req, res) => res.send("Hey this is my API running 🥳"));
-app.get("/api/categories", async (req, res) => res.send(await getAllCategories()));
-app.get("/api/balance", async (req, res) => res.send(`${await getBalance()}`));
-app.post("/api/users", async (req, res) => res.send(await postNewCheck(req.body.area, req.body.amount, req.body.category, req.body.note)));
-app.post("/api/syncMonoBank", syncMonoBank);
+app.listen(3000, () => console.log("Сервер очікує підключення..."));
 
-app.listen(3000, () => console.log("Сервер ожидает подключения..."));
 module.exports = app;
