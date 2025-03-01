@@ -284,7 +284,7 @@ app.post("/api/syncMonoBank", async function (req, res) {
     // Отримання результатів для кожної картки
     const results = await Promise.all(id_cards.map(async (id_card) => {
       const to = Math.floor(Date.now() / 1000);
-      const from = Date.now() - (10 * 24 * 60 * 60 * 1000);
+      const from = Date.now() - (5 * 24 * 60 * 60 * 1000);
       const url = `https://api.monobank.ua/personal/statement/${id_card}/${from}/${to}`;
   
       const response = await axios.get(url, { headers: { 'X-Token': xToken } });
